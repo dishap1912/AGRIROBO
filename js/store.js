@@ -14,6 +14,7 @@
     baseUrl: 'http://192.168.4.1',
     apiToken: '',
     refreshIntervalSec: 5,
+    speedMode: 1,                    // 0 normal, 1 slow (default), 2 fast
     deviceName: 'AgriRobo-01',
     autoPercent: false,              // ESP32 sends calibrated percent
     calDry: 3200,                    // raw ADC in dry air

@@ -13,7 +13,7 @@
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="css/styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
+  <script src="js/chart.umd.min.js" defer></script>
   <script src="js/store.js" defer></script>
   <script src="js/api.js" defer></script>
   <script src="js/charts.js" defer></script>
@@ -249,6 +249,18 @@
 
         <article class="card">
           <div class="card-head">
+            <span class="card-icon" aria-hidden="true">⚙️</span>
+            <div><h3>Drive Speed</h3><span class="card-sub">Starts on Slow for safety</span></div>
+          </div>
+          <div id="speed-row" class="btn-row">
+            <button class="chip-btn" type="button" data-speed="1">Slow</button>
+            <button class="chip-btn" type="button" data-speed="0">Normal</button>
+            <button class="chip-btn" type="button" data-speed="2">Fast</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
             <span class="card-icon" aria-hidden="true">🔲</span>
             <div><h3>Direction Buttons</h3><span class="card-sub">Requires ESP32 drive firmware</span></div>
           </div>
@@ -259,7 +271,7 @@
             <button class="dpad-btn dpad-right" data-dir="right" type="button" disabled>▶<span>Right</span></button>
             <button class="dpad-btn dpad-down" data-dir="backward" type="button" disabled>▼<span>Back</span></button>
           </div>
-          <p class="hint">Firmware not exposing movement? These buttons stay disabled and no commands are sent.</p>
+          <p class="hint">Tap a direction to keep driving that way; tap Stop to halt. The robot also stops by itself if the link drops.</p>
         </article>
 
         <article class="card">
@@ -338,7 +350,7 @@
           <label class="field">
             <span>Connection mode</span>
             <select id="set-mode">
-              <option value="live">Live — local Wi-Fi / ESP32 HTTP API</option>
+              <option value="live">Live — ESP32 over Wi-Fi (WebSocket)</option>
               <option value="demo">Demo — simulated data (no robot)</option>
             </select>
           </label>

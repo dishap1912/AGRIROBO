@@ -1,5 +1,5 @@
 /* AgriRobo Service Worker — offline app shell */
-var CACHE = 'agrirobo-v1';
+var CACHE = 'agrirobo-v2';
 var ASSETS = [
   './',
   './index.html',
@@ -8,13 +8,17 @@ var ASSETS = [
   './js/api.js',
   './js/charts.js',
   './js/app.js',
+  './js/chart.umd.min.js',
   './manifest.json',
   './icons/icon.svg'
 ];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(
-    caches.open(CACHE).then(function (c) { return c.addAll(ASSETS); }).then(function () { return self.skipWaiting(); })
+    caches.open(CACHE).then(function (c) {
+      // add one by one so a single missing file can't break the whole install
+      return Promise.all(ASSETS.map(function (u) { return c.add(u).catch(function () {}); }));
+    }).then(function () { return self.skipWaiting(); })
   );
 });
 

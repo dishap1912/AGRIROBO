@@ -591,6 +591,20 @@
       });
     });
 
+    // Drive speed (Slow / Normal / Fast)
+    function showSpeed() {
+      $$('#speed-row [data-speed]').forEach(function (b) {
+        b.classList.toggle('active', Number(b.getAttribute('data-speed')) === AgrApi.getSpeed());
+      });
+    }
+    $$('#speed-row [data-speed]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        AgrApi.setSpeed(Number(b.getAttribute('data-speed')));
+        showSpeed();
+      });
+    });
+    showSpeed();
+
     // Emergency
     $('#btn-emergency').addEventListener('click', function () {
       confirmAction('EMERGENCY STOP', 'This immediately stops all robot activity including the water pump. Continue?')
