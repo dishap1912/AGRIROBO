@@ -132,6 +132,12 @@
   function enableControls(enabled) {
     $$('#dpad .dpad-btn').forEach(function (b) { b.disabled = !enabled; });
     $('#btn-emergency').disabled = !enabled;
+    var joy = $('#joystick');
+    if (joy) {
+      joy.classList.toggle('disabled', !enabled);
+      joy.setAttribute('aria-disabled', String(!enabled));
+      if (!enabled) resetKnob('Idle');
+    }
     var s = AgrStore.settings;
     // Only enable feature buttons that the firmware reported as available (or demo simulates pump)
     var last = AgrStore.lastReading;
@@ -371,6 +377,110 @@
     }
   }
 
+  /* ================= Virtual joystick ================= */
+  var joyLastDir = 'stop';
+
+  function resetKnob(label) {
+    var knob = $('#joy-knob');
+    var base = $('#joystick');
+    if (knob) knob.style.transform = 'translate(-50%, -50%)';
+    if (base) base.classList.remove('dragging');
+    var out = $('#joy-readout');
+    if (out && label !== undefined) out.textContent = label;
+    joyLastDir = 'stop';
+  }
+
+  function initJoystick() {
+    var base = $('#joystick');
+    var knob = $('#joy-knob');
+    var readout = $('#joy-readout');
+    if (!base || !knob) return;
+
+    var DIR_LABELS = {
+      stop: '● Idle / Stopped',
+      forward: '▲ Forward',
+      backward: '▼ Backward',
+      left: '◀ Left',
+      right: '▶ Right'
+    };
+    var active = false;
+    var currentDir = 'stop';
+
+    function sendDir(dir) {
+      if (dir === joyLastDir) return;
+      joyLastDir = dir;
+      readout.textContent = DIR_LABELS[dir];
+      AgrApi.sendMove(dir).catch(function (err) {
+        toast('Joystick command failed: ' + (err.message || 'error'), true);
+      });
+    }
+
+    function handle(clientX, clientY) {
+      var rect = base.getBoundingClientRect();
+      var cx = rect.left + rect.width / 2;
+      var cy = rect.top + rect.height / 2;
+      var dx = clientX - cx;
+      var dy = clientY - cy;
+      var maxR = rect.width / 2 - knob.offsetWidth / 2 - 4;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist > maxR) { dx = dx / dist * maxR; dy = dy / dist * maxR; }
+      knob.style.transform = 'translate(calc(-50% + ' + dx + 'px), calc(-50% + ' + dy + 'px))';
+
+      var deadzone = 14;
+      if (dist < deadzone) { currentDir = 'stop'; return; }
+      if (Math.abs(dy) >= Math.abs(dx)) currentDir = dy < 0 ? 'forward' : 'backward';
+      else currentDir = dx < 0 ? 'left' : 'right';
+      sendDir(currentDir);
+    }
+
+    function onDown(e) {
+      if (base.classList.contains('disabled')) return;
+      active = true;
+      base.classList.add('dragging');
+      if (base.setPointerCapture && e.pointerId !== undefined) {
+        try { base.setPointerCapture(e.pointerId); } catch (err) {}
+      }
+      e.preventDefault();
+      handle(e.clientX, e.clientY);
+    }
+    function onMove(e) {
+      if (!active) return;
+      e.preventDefault();
+      handle(e.clientX, e.clientY);
+    }
+    function onUp() {
+      if (!active) return;
+      active = false;
+      var wasMoving = joyLastDir !== 'stop';
+      resetKnob(DIR_LABELS.stop);
+      if (wasMoving) AgrApi.sendMove('stop').catch(function () {});
+    }
+
+    base.addEventListener('pointerdown', onDown);
+    base.addEventListener('pointermove', onMove);
+    base.addEventListener('pointerup', onUp);
+    base.addEventListener('pointercancel', onUp);
+    base.addEventListener('lostpointercapture', onUp);
+    // Keyboard accessibility: arrows on focused joystick
+    base.setAttribute('tabindex', '0');
+    base.addEventListener('keydown', function (e) {
+      if (base.classList.contains('disabled')) return;
+      var map = { ArrowUp: 'forward', ArrowDown: 'backward', ArrowLeft: 'left', ArrowRight: 'right', ' ': 'stop', Enter: 'stop' };
+      var dir = map[e.key];
+      if (!dir) return;
+      e.preventDefault();
+      if (dir === 'stop') { resetKnob(DIR_LABELS.stop); AgrApi.sendMove('stop').catch(function () {}); }
+      else sendDir(dir);
+    });
+    base.addEventListener('keyup', function () {
+      if (base.classList.contains('disabled')) return;
+      var wasMoving = joyLastDir !== 'stop';
+      resetKnob(DIR_LABELS.stop);
+      if (wasMoving) AgrApi.sendMove('stop').catch(function () {});
+    });
+  }
+
   /* ================= Pump countdown UI ================= */
   function renderPumpTimer(left) {
     var el = $('#pump-timer');
@@ -471,6 +581,7 @@
     });
 
     // Movement
+    initJoystick();
     $$('#dpad .dpad-btn').forEach(function (b) {
       b.addEventListener('click', function () {
         var dir = b.getAttribute('data-dir');

@@ -235,7 +235,22 @@
         <article class="card">
           <div class="card-head">
             <span class="card-icon" aria-hidden="true">🕹️</span>
-            <div><h3>Manual Movement</h3><span class="card-sub">Requires ESP32 drive firmware</span></div>
+            <div><h3>Virtual Joystick</h3><span class="card-sub">Drag to drive — release to stop</span></div>
+          </div>
+          <div class="joystick-wrap">
+            <div id="joystick" class="joystick disabled" role="application" aria-label="Robot movement joystick" aria-disabled="true">
+              <div class="joy-cross"></div>
+              <div id="joy-knob" class="joy-knob"></div>
+            </div>
+            <div id="joy-readout" class="joy-readout">Idle</div>
+            <p class="hint" style="text-align:center">Push the stick up/down/left/right to move the robot. It stops automatically when you let go.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">🔲</span>
+            <div><h3>Direction Buttons</h3><span class="card-sub">Requires ESP32 drive firmware</span></div>
           </div>
           <div class="dpad" id="dpad">
             <button class="dpad-btn dpad-up" data-dir="forward" type="button" disabled>▲<span>Forward</span></button>

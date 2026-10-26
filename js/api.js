@@ -141,7 +141,7 @@
       deviceStatus: 'demo',
       battery: null,
       pumpStatus: pumping ? 'on' : 'off',
-      features: { pump: true, movement: false, seed: false, plough: false },
+      features: { pump: true, movement: true, seed: false, plough: false },
       mode: 'demo'
     };
     AgrStore.addReading(rec);
