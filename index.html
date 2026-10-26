@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1b5e20">
+  <meta name="description" content="AgriRobo Smart Farming Assistant — monitor soil moisture, temperature and humidity from your ESP32 farm robot.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="AgriRobo">
+  <title>AgriRobo — Smart Farming Assistant</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
+  <script src="js/store.js" defer></script>
+  <script src="js/api.js" defer></script>
+  <script src="js/charts.js" defer></script>
+  <script src="js/app.js" defer></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- ================= HEADER ================= -->
+    <header class="app-header">
+      <div class="header-inner">
+        <div class="brand">
+          <div class="brand-icon" aria-hidden="true">🌱</div>
+          <div class="brand-text">
+            <h1>AgriRobo</h1>
+            <p>Smart Farming Assistant</p>
+          </div>
+        </div>
+        <div class="header-right">
+          <span id="conn-badge" class="conn-badge" role="status" aria-live="polite">
+            <span class="dot"></span><span class="conn-label">Disconnected</span>
+          </span>
+          <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Toggle theme">🌙</button>
+        </div>
+      </div>
+      <div id="demo-banner" class="demo-banner hidden" role="alert">
+        ⚠️ <strong>Demo Mode</strong> — readings are simulated, not from your robot.
+        <button id="demo-exit" class="link-btn" type="button">Go live</button>
+      </div>
+      <div id="update-bar" class="update-bar hidden">
+        Last update: <span id="last-update-label">—</span>
+      </div>
+    </header>
+
+    <!-- ================= MAIN ================= -->
+    <main id="main" class="main">
+
+      <!-- ============ HOME ============ -->
+      <section id="screen-home" class="screen active" aria-label="Dashboard">
+        <h2 class="screen-title">Dashboard</h2>
+
+        <div id="data-unavailable" class="state-card hidden" role="alert">
+          <div class="state-icon">📡</div>
+          <h3>Waiting for sensor data</h3>
+          <p id="data-unavailable-msg">The robot is not sending data yet.</p>
+          <div class="state-actions">
+            <button id="btn-refresh-state" class="btn btn-primary" type="button">Refresh</button>
+            <button id="btn-open-setup" class="btn btn-outline" type="button">Connection setup</button>
+          </div>
+        </div>
+
+        <div id="dashboard-grid" class="grid">
+          <!-- Soil Moisture -->
+          <article class="card sensor-card" id="card-soil">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">💧</span>
+              <div>
+                <h3>Soil Moisture</h3>
+                <span class="card-sub" id="soil-source">Soil moisture sensor</span>
+              </div>
+            </div>
+            <div class="reading">
+              <span id="soil-value" class="value">--</span>
+              <span id="soil-unit" class="unit">%</span>
+            </div>
+            <div class="gauge"><div id="soil-gauge-fill" class="gauge-fill" style="width:0%"></div></div>
+            <div class="status-row">
+              <span id="soil-status" class="chip chip-neutral">—</span>
+              <span id="soil-time" class="time-label">No data</span>
+            </div>
+            <p id="soil-msg" class="card-msg hidden"></p>
+          </article>
+
+          <!-- Temperature -->
+          <article class="card sensor-card" id="card-temp">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">🌡️</span>
+              <div>
+                <h3>Temperature</h3>
+                <span class="card-sub">DHT11 sensor</span>
+              </div>
+            </div>
+            <div class="reading">
+              <span id="temp-value" class="value">--</span>
+              <span class="unit">°C</span>
+            </div>
+            <div class="status-row">
+              <span id="temp-status" class="chip chip-neutral">—</span>
+              <span id="temp-time" class="time-label">No data</span>
+            </div>
+            <p id="temp-msg" class="card-msg hidden"></p>
+          </article>
+
+          <!-- Humidity -->
+          <article class="card sensor-card" id="card-hum">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">💦</span>
+              <div>
+                <h3>Humidity</h3>
+                <span class="card-sub">DHT11 sensor</span>
+              </div>
+            </div>
+            <div class="reading">
+              <span id="hum-value" class="value">--</span>
+              <span class="unit">%</span>
+            </div>
+            <div class="gauge"><div id="hum-gauge-fill" class="gauge-fill" style="width:0%"></div></div>
+            <div class="status-row">
+              <span id="hum-status" class="chip chip-neutral">—</span>
+              <span id="hum-time" class="time-label">No data</span>
+            </div>
+          </article>
+
+          <!-- Device -->
+          <article class="card status-card" id="card-device">
+            <div class="card-head">
+              <span class="card-icon" aria-hidden="true">🤖</span>
+              <div>
+                <h3>Robot</h3>
+                <span class="card-sub" id="device-name-label">AgriRobo-01</span>
+              </div>
+            </div>
+            <div class="kv-list">
+              <div class="kv"><span>Connection</span><strong id="device-status">Disconnected</strong></div>
+              <div class="kv"><span>Mode</span><strong id="device-mode">Live</strong></div>
+              <div class="kv"><span>Last successful update</span><strong id="device-last">Never</strong></div>
+              <div class="kv" id="kv-pump-row"><span>Pump</span><strong id="pump-status">Unknown</strong></div>
+              <div class="kv hidden" id="kv-battery-row"><span>Battery</span><strong id="battery-value">—</strong></div>
+            </div>
+          </article>
+        </div>
+
+        <!-- Irrigation assistant -->
+        <article class="card irrigation-card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">🚿</span>
+            <div>
+              <h3>Smart Irrigation Assistant</h3>
+              <span class="card-sub">Threshold-based watering guidance</span>
+            </div>
+          </div>
+          <div class="irrigation-body">
+            <div class="kv"><span>Configured threshold</span><strong id="irr-threshold">40%</strong></div>
+            <div class="kv"><span>Current soil moisture</span><strong id="irr-current">—</strong></div>
+            <p id="irr-recommendation" class="card-msg">Configure your threshold in Settings, then connect the robot.</p>
+            <div class="pump-controls" id="pump-controls">
+              <button id="btn-water-on" class="btn btn-water" type="button" disabled>Water ON</button>
+              <button id="btn-water-off" class="btn btn-outline" type="button" disabled>Water OFF</button>
+              <span id="pump-timer" class="pump-timer hidden">Auto-off in <strong id="pump-countdown">30</strong>s</span>
+            </div>
+            <p id="pump-unavailable" class="hint">Pump control appears here once the ESP32 firmware exposes the pump API.</p>
+          </div>
+        </article>
+
+        <div class="btn-row">
+          <button id="btn-refresh" class="btn btn-primary btn-wide" type="button">⟳ Refresh now</button>
+        </div>
+
+        <!-- Alerts -->
+        <article class="card alerts-card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">🔔</span>
+            <div>
+              <h3>Alerts</h3>
+              <span class="card-sub">Soil, sensor and threshold warnings</span>
+            </div>
+          </div>
+          <ul id="alerts-list" class="alerts-list"></ul>
+        </article>
+      </section>
+
+      <!-- ============ HISTORY ============ -->
+      <section id="screen-history" class="screen" aria-label="Sensor history">
+        <h2 class="screen-title">Sensor History</h2>
+        <div class="filter-row" role="tablist" aria-label="Time range filter">
+          <button class="chip-btn active" data-range="1h" type="button">Last hour</button>
+          <button class="chip-btn" data-range="24h" type="button">Last 24 h</button>
+          <button class="chip-btn" data-range="7d" type="button">Last 7 days</button>
+        </div>
+        <div id="history-empty" class="state-card hidden">
+          <div class="state-icon">📊</div>
+          <h3>No history yet</h3>
+          <p>Recorded readings will appear here after the robot has been connected for a while.</p>
+        </div>
+        <article class="card chart-card">
+          <h3>Soil Moisture (%)</h3>
+          <div class="chart-wrap"><canvas id="chart-soil"></canvas></div>
+          <p id="chart-soil-empty" class="chart-empty hidden">No soil moisture records in this range.</p>
+        </article>
+        <article class="card chart-card">
+          <h3>Temperature (°C)</h3>
+          <div class="chart-wrap"><canvas id="chart-temp"></canvas></div>
+          <p id="chart-temp-empty" class="chart-empty hidden">No temperature records in this range.</p>
+        </article>
+        <article class="card chart-card">
+          <h3>Humidity (%)</h3>
+          <div class="chart-wrap"><canvas id="chart-hum"></canvas></div>
+          <p id="chart-hum-empty" class="chart-empty hidden">No humidity records in this range.</p>
+        </article>
+        <p class="footnote" id="history-count">0 readings stored locally.</p>
+      </section>
+
+      <!-- ============ CONTROLS ============ -->
+      <section id="screen-controls" class="screen" aria-label="Robot controls">
+        <h2 class="screen-title">Robot Controls</h2>
+
+        <div class="conn-strip">
+          <span id="ctrl-conn" class="conn-badge"><span class="dot"></span><span class="conn-label">Disconnected</span></span>
+          <span id="ctrl-mode" class="chip chip-neutral">Live mode</span>
+        </div>
+
+        <div id="controls-disabled-note" class="state-card compact">
+          <div class="state-icon">🔌</div>
+          <h3>Controls need a live connection</h3>
+          <p>Connect the app to your AgriRobo ESP32 (same Wi-Fi network) to enable movement, pump and other controls.</p>
+          <button id="btn-goto-setup-ctrl" class="btn btn-primary" type="button">Open connection setup</button>
+        </div>
+
+        <article class="card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">🕹️</span>
+            <div><h3>Manual Movement</h3><span class="card-sub">Requires ESP32 drive firmware</span></div>
+          </div>
+          <div class="dpad" id="dpad">
+            <button class="dpad-btn dpad-up" data-dir="forward" type="button" disabled>▲<span>Forward</span></button>
+            <button class="dpad-btn dpad-left" data-dir="left" type="button" disabled>◀<span>Left</span></button>
+            <button class="dpad-btn dpad-stop" data-dir="stop" type="button" disabled>■<span>Stop</span></button>
+            <button class="dpad-btn dpad-right" data-dir="right" type="button" disabled>▶<span>Right</span></button>
+            <button class="dpad-btn dpad-down" data-dir="backward" type="button" disabled>▼<span>Back</span></button>
+          </div>
+          <p class="hint">Firmware not exposing movement? These buttons stay disabled and no commands are sent.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">⚡</span>
+            <div><h3>Emergency</h3><span class="card-sub">Stops all robot activity</span></div>
+          </div>
+          <button id="btn-emergency" class="btn btn-danger btn-wide" type="button" disabled>🛑 EMERGENCY STOP</button>
+          <p id="emergency-result" class="hint"></p>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">🌱</span>
+            <div><h3>Seed Dispensing</h3><span class="card-sub">If implemented in firmware</span></div>
+          </div>
+          <button id="btn-seed" class="btn btn-outline btn-wide" type="button" disabled>Dispense Seeds</button>
+          <p id="seed-result" class="hint"></p>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">🚜</span>
+            <div><h3>Ploughing</h3><span class="card-sub">If implemented in firmware</span></div>
+          </div>
+          <button id="btn-plough" class="btn btn-outline btn-wide" type="button" disabled>Start Ploughing</button>
+          <p id="plough-result" class="hint"></p>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">🚿</span>
+            <div><h3>Water Pump</h3><span class="card-sub">Manual irrigation with auto-off safeguard</span></div>
+          </div>
+          <div class="pump-controls">
+            <button id="btn-water-on-ctrl" class="btn btn-water" type="button" disabled>Water ON</button>
+            <button id="btn-water-off-ctrl" class="btn btn-outline" type="button" disabled>Water OFF</button>
+          </div>
+          <p id="pump-ctrl-status" class="hint"></p>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <span class="card-icon" aria-hidden="true">ℹ️</span>
+            <div><h3>Feature Availability</h3><span class="card-sub">What works with the current firmware</span></div>
+          </div>
+          <ul class="feature-list" id="feature-list">
+            <li><span>Soil moisture monitoring</span><span class="chip chip-ok">Supported</span></li>
+            <li><span>Temperature &amp; humidity (DHT11)</span><span class="chip chip-ok">Supported</span></li>
+            <li><span>Manual water pump</span><span class="chip chip-warn">Needs pump firmware</span></li>
+            <li><span>Robot movement</span><span class="chip chip-warn">Needs drive firmware</span></li>
+            <li><span>Seed dispensing</span><span class="chip chip-warn">Not implemented</span></li>
+            <li><span>Ploughing</span><span class="chip chip-warn">Not implemented</span></li>
+            <li><span>Water level sensor</span><span class="chip chip-warn">No sensor connected</span></li>
+          </ul>
+        </article>
+      </section>
+
+      <!-- ============ SETTINGS ============ -->
+      <section id="screen-settings" class="screen" aria-label="Settings">
+        <h2 class="screen-title">Settings &amp; Setup</h2>
+
+        <article class="card">
+          <h3>1. First-time connection</h3>
+          <ol class="steps">
+            <li>Power on AgriRobo. The ESP32 creates or joins a Wi-Fi network.</li>
+            <li>Connect your phone to <strong>the same Wi-Fi network</strong> as the robot (or join the robot's hotspot, e.g. <code>AgriRobo-AP</code>).</li>
+            <li>Find the robot's address (shown on the robot's serial monitor, e.g. <code>192.168.4.1</code>).</li>
+            <li>Enter the address below and tap <strong>Test &amp; Save</strong>.</li>
+          </ol>
+          <p class="hint">Local Wi-Fi only reaches the robot on that network. For remote access from anywhere, the ESP32 must send data to a cloud IoT backend (see README).</p>
+        </article>
+
+        <article class="card">
+          <h3>ESP32 Connection</h3>
+          <label class="field">
+            <span>Connection mode</span>
+            <select id="set-mode">
+              <option value="live">Live — local Wi-Fi / ESP32 HTTP API</option>
+              <option value="demo">Demo — simulated data (no robot)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>ESP32 base URL</span>
+            <input id="set-url" type="url" inputmode="url" placeholder="http://192.168.4.1" autocomplete="off">
+            <small>IP or hostname of the ESP32 on your local network. Example: <code>http://192.168.1.50</code></small>
+          </label>
+          <label class="field">
+            <span>Optional API token</span>
+            <input id="set-token" type="password" placeholder="Bearer token (if enabled on ESP32)" autocomplete="off">
+            <small>Stored only on this device. Never commit it to public code.</small>
+          </label>
+          <label class="field">
+            <span>Refresh interval (seconds)</span>
+            <input id="set-interval" type="number" min="2" max="300" step="1">
+          </label>
+          <div class="btn-row">
+            <button id="btn-test-conn" class="btn btn-outline" type="button">Test connection</button>
+            <button id="btn-save-conn" class="btn btn-primary" type="button">Save settings</button>
+          </div>
+          <p id="conn-test-result" class="hint" role="status"></p>
+        </article>
+
+        <article class="card">
+          <h3>Device</h3>
+          <label class="field">
+            <span>Robot / device name</span>
+            <input id="set-device-name" type="text" maxlength="40" placeholder="AgriRobo-01">
+          </label>
+        </article>
+
+        <article class="card">
+          <h3>Soil Moisture Calibration</h3>
+          <p class="hint">Raw ADC values differ per sensor and soil. Calibrate by lifting the sensor out of dry soil (note raw = "dry") and into wet soil (note raw = "wet"). The app converts live raw readings to a percentage.</p>
+          <label class="field">
+            <span>Raw ADC value in dry air (wet end)</span>
+            <input id="set-cal-dry" type="number" inputmode="numeric" placeholder="e.g. 3200">
+          </label>
+          <label class="field">
+            <span>Raw ADC value in wet soil</span>
+            <input id="set-cal-wet" type="number" inputmode="numeric" placeholder="e.g. 1200">
+          </label>
+          <label class="field checkbox-field">
+            <input id="set-auto-percent" type="checkbox">
+            <span>ESP32 already sends calibrated <code>soil_moisture_percent</code> (skip local conversion)</span>
+          </label>
+        </article>
+
+        <article class="card">
+          <h3>Thresholds &amp; Alerts</h3>
+          <label class="field">
+            <span>Soil moisture warning threshold (%)</span>
+            <input id="set-soil-threshold" type="number" min="0" max="100" placeholder="40">
+            <small>Below this value the app warns that watering may be required.</small>
+          </label>
+          <label class="field">
+            <span>Low moisture alert (%)</span>
+            <input id="set-soil-alert" type="number" min="0" max="100" placeholder="25">
+          </label>
+          <label class="field">
+            <span>High temperature alert (°C)</span>
+            <input id="set-temp-high" type="number" placeholder="38">
+          </label>
+          <label class="field">
+            <span>Low temperature alert (°C)</span>
+            <input id="set-temp-low" type="number" placeholder="10">
+          </label>
+          <label class="field">
+            <span>High humidity alert (%)</span>
+            <input id="set-hum-high" type="number" min="0" max="100" placeholder="85">
+          </label>
+          <label class="field">
+            <span>Max manual watering duration (seconds)</span>
+            <input id="set-pump-max" type="number" min="5" max="600" placeholder="30">
+            <small>The app sends an automatic Water OFF when this time is reached.</small>
+          </label>
+          <div class="btn-row">
+            <button id="btn-save-thresholds" class="btn btn-primary" type="button">Save thresholds</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Display</h3>
+          <label class="field">
+            <span>Theme</span>
+            <select id="set-theme">
+              <option value="system">System default</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <div class="btn-row">
+            <button id="btn-save-display" class="btn btn-primary" type="button">Save display</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>Troubleshooting</h3>
+          <ul class="trouble-list">
+            <li><strong>Stuck on "Disconnected"</strong> — confirm the phone and ESP32 are on the <em>same</em> Wi-Fi network (not mobile data).</li>
+            <li><strong>CORS / network error</strong> — the ESP32 firmware must send CORS headers (the provided firmware does). Try the IP directly, not a wrong hostname.</li>
+            <li><strong>Wrong readings</strong> — recalibrate the soil sensor in Settings; ensure the DHT11 data pin matches the firmware.</li>
+            <li><strong>Need remote access</strong> — local Wi-Fi cannot be reached from outside the network. Use a cloud IoT backend or a VPN/tunnel.</li>
+          </ul>
+          <div class="btn-row">
+            <button id="btn-clear-history" class="btn btn-outline" type="button">Clear stored history</button>
+          </div>
+        </article>
+
+        <p class="footnote" id="app-version">AgriRobo App v1.0.0 — college engineering project</p>
+      </section>
+
+    </main>
+
+    <!-- ================= BOTTOM NAV ================= -->
+    <nav class="bottom-nav" aria-label="Main navigation">
+      <button class="nav-btn active" data-screen="home" type="button">
+        <span class="nav-icon" aria-hidden="true">🏠</span><span>Home</span>
+      </button>
+      <button class="nav-btn" data-screen="history" type="button">
+        <span class="nav-icon" aria-hidden="true">📊</span><span>History</span>
+      </button>
+      <button class="nav-btn" data-screen="controls" type="button">
+        <span class="nav-icon" aria-hidden="true">🤖</span><span>Controls</span>
+      </button>
+      <button class="nav-btn" data-screen="settings" type="button">
+        <span class="nav-icon" aria-hidden="true">⚙️</span><span>Settings</span>
+      </button>
+    </nav>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden" role="alert" aria-live="assertive"></div>
+
+    <!-- Confirm dialog -->
+    <div id="confirm-overlay" class="overlay hidden">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h3 id="confirm-title">Are you sure?</h3>
+        <p id="confirm-msg"></p>
+        <div class="btn-row">
+          <button id="confirm-cancel" class="btn btn-outline" type="button">Cancel</button>
+          <button id="confirm-ok" class="btn btn-danger" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
