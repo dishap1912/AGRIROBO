@@ -1,13 +1,18 @@
 /* ============================================================
-   AgriRobo — API client (dual-transport edition)
+   AgriRobo — API client (dual-transport + state machine)
    Live mode : PRIMARY   WebSocket  ws://<esp32>:81
                      (sends "x,y,speed,stop,dispense" 20x/s,
                       receives "S,<tempC>,<hum%>,<soilRaw>" ~2s)
                FALLBACK  HTTP JSON  http://<esp32>/api/*
-                     (auto-selected if the WebSocket cannot connect;
-                      movement commands are re-sent every 300 ms while
-                      held so the firmware's 800 ms failsafe stays fed)
+                      (auto-selected if the WebSocket cannot connect;
+                       movement commands are re-sent every 300 ms while
+                       held so the firmware's 800 ms failsafe stays fed)
    Demo mode : clearly-labelled simulated data (no robot)
+
+   Connection state machine (emitted on the "state" event):
+     idle -> connecting -> connected
+                     \-> reconnecting -> connected | error
+     error is unrecoverable (HTTPS page / no address / bad firmware)
    Public API is unchanged, so app.js / charts.js keep working.
    ============================================================ */
 (function () {
@@ -19,6 +24,11 @@
   var HTTP_TIMEOUT_MS = 3500;
   var HTTP_MOVE_REPEAT_MS = 300;    // keep firmware failsafe fed while holding a command
   var HTTP_FAIL_LIMIT = 2;          // consecutive HTTP failures before falling back to WS
+  var BACKOFF_MS = [2000, 2000, 4000, 4000, 8000, 8000];  // then 15000 cap
+  var BACKOFF_CAP_MS = 15000;
+
+  var STATES = { IDLE: 'idle', CONNECTING: 'connecting', CONNECTED: 'connected',
+                 RECONNECTING: 'reconnecting', ERROR: 'error' };
 
   var listeners = {};
   var ws = null, wsOpen = false, wantLive = false;
@@ -28,6 +38,16 @@
   var moveRepeatTimer = null, lastMoveDir = 'stop';
   var cmd = { x: 0, y: 0, stop: 0, disp: 0 };
   var latest = null, lastStoredAt = 0, rawWaiters = [];
+
+  var state = STATES.IDLE;
+  var backoffIdx = 0;
+  var diag = [];                    // ring buffer of {t, level, msg}
+  var DIAG_MAX = 60;
+
+  // injectable deps (tests / _configure); fall back to globals at call time
+  var WebSocketImpl = null, fetchImpl = null;
+  function getWS() { return WebSocketImpl || (typeof WebSocket !== 'undefined' ? WebSocket : null); }
+  function getFetch() { return fetchImpl || (typeof fetch !== 'undefined' ? fetch : null); }
 
   // demo-only state
   var pollTimer = null, pumping = false, pumpOffTimer = null, demoTick = 0;
@@ -40,6 +60,30 @@
     });
   }
   function isDemo() { return AgrStore.settings.mode === 'demo'; }
+
+  function log(level, msg) {
+    var entry = { t: Date.now(), level: level, msg: msg };
+    diag.push(entry);
+    if (diag.length > DIAG_MAX) diag.shift();
+    var tag = '[AgrApi ' + level + ']';
+    if (level === 'error') console.error(tag, msg);
+    else if (level === 'warn') console.warn(tag, msg);
+    else console.log(tag, msg);
+  }
+
+  function setState(next, detail) {
+    if (state === next && !detail) return;
+    var prev = state;
+    state = next;
+    log('state', prev + ' -> ' + next + (detail ? ' (' + detail + ')' : ''));
+    emit('state', { state: next, prev: prev, detail: detail || null, transport: transport });
+  }
+
+  function nextBackoff() {
+    var ms = backoffIdx < BACKOFF_MS.length ? BACKOFF_MS[backoffIdx] : BACKOFF_CAP_MS;
+    if (backoffIdx < BACKOFF_MS.length) backoffIdx++;
+    return ms;
+  }
 
   function toNumberOrNull(v) {
     if (v === null || v === undefined || v === '' || v === 'null' || v === 'NaN' || v === 'err') return null;
@@ -70,9 +114,10 @@
       .replace(/^[a-z]+:\/\//i, '').replace(/[\/?#].*$/, '').replace(/:\d+$/, '');
   }
 
+  /* RC2 fix: derive the HTTP base from the SAME host as the WebSocket so the
+     two transports can never point at different machines. The ESP32 HTTP API
+     always lives on port 80, so we always use http://<host>. */
   function espBase() {
-    var s = String(AgrStore.settings.baseUrl || '').trim().replace(/\/+$/, '');
-    if (/^https?:\/\/.+/.test(s)) return s;
     var h = espHost();
     return h ? 'http://' + h : '';
   }
@@ -156,14 +201,16 @@
   function storeAndEmit(rec) {
     lastStoredAt = Date.now();
     latest = rec;
+    backoffIdx = 0;                 // success -> reset the reconnect backoff
     AgrStore.addReading(rec);
+    setState(STATES.CONNECTED, rec.transport);
     emit('connected', rec);
     emit('reading', rec);
   }
 
   function onWsMessage(e) {
     var rec = parseSensorMsg(e.data);
-    if (!rec) return;
+    if (!rec) { log('warn', 'Ignoring malformed sensor frame: ' + JSON.stringify(String(e.data).slice(0, 40))); return; }
     latest = rec;
     if (shouldStore()) storeAndEmit(rec);
     var w = rawWaiters; rawWaiters = [];
@@ -181,10 +228,14 @@
   function startStream() { stopStream(); streamTimer = setInterval(streamTick, SEND_MS); }
   function stopStream() { if (streamTimer) { clearInterval(streamTimer); streamTimer = null; } }
 
-  function scheduleReconnect() {
+  function scheduleReconnect(reason) {
     clearTimeout(reconnectTimer);
     if (!wantLive || transport === 'http') return;
-    reconnectTimer = setTimeout(connectLive, 3000);
+    if (state === STATES.ERROR) return;      // unrecoverable -> do not retry
+    var ms = nextBackoff();
+    setState(STATES.RECONNECTING, reason + ' — retry in ' + ms + 'ms');
+    log('info', 'Reconnecting in ' + ms + 'ms (attempt ' + backoffIdx + ')');
+    reconnectTimer = setTimeout(connectLive, ms);
   }
 
   function closeWs() {
@@ -205,16 +256,22 @@
     if (ws) closeWs();
     var host = espHost();
     if (!host) {
+      setState(STATES.ERROR, 'no-address');
       emit('disconnected', { error: 'No ESP32 address set — enter it in Settings (e.g. http://192.168.4.1).' });
       return;
     }
     if (location.protocol === 'https:') {
+      setState(STATES.ERROR, 'https-page');
       emit('disconnected', { error: 'This page is on HTTPS, but the robot only speaks plain ws:// and http://. ' +
         'Open the app from http://' + host + ' (served by the ESP32 itself) instead, or switch to Demo mode in Settings.' });
       return;
     }
-    try { ws = new WebSocket('ws://' + host + ':' + WS_PORT + '/'); }
+    if (state !== STATES.RECONNECTING) setState(STATES.CONNECTING, 'ws://' + host + ':' + WS_PORT);
+    var WS = getWS();
+    if (!WS) { emit('disconnected', { error: 'WebSocket API unavailable in this browser.' }); return; }
+    try { ws = new WS('ws://' + host + ':' + WS_PORT + '/'); }
     catch (e) {
+      log('warn', 'WebSocket constructor threw: ' + (e.message || e));
       emit('disconnected', { error: e.message || 'WebSocket blocked' });
       httpFallbackOrRetry(host, false);
       return;
@@ -228,9 +285,11 @@
       if (mine !== ws) return;
       wsOpen = true;
       transport = 'ws';
+      backoffIdx = 0;
       stopHttpPolling();
       cmd.x = 0; cmd.y = 0;          // always start centred so the robot arms safely
       startStream();
+      log('info', 'WebSocket open on ' + host + ':' + WS_PORT);
     };
     ws.onmessage = onWsMessage;
     ws.onerror = function () { try { mine.close(); } catch (e) {} };
@@ -243,9 +302,10 @@
       if (!wantLive) return;
       if (was) {
         emit('disconnected', { error: 'Connection to the robot was lost' });
-        scheduleReconnect();
+        scheduleReconnect('ws-lost');
       } else if (transport !== 'http') {
         // WS never opened -> try the HTTP API before giving up
+        log('info', 'WebSocket did not open — trying HTTP fallback');
         emit('disconnected', { error: 'WebSocket on port 81 not responding — trying HTTP fallback…' });
         httpFallbackOrRetry(host, true);
       }
@@ -254,11 +314,13 @@
 
   /* ================= HTTP TRANSPORT (fallback) ================= */
   function fetchJson(url, method, body, ms) {
+    var f = getFetch();
+    if (!f) return Promise.reject(new Error('fetch API unavailable'));
     var ctrl = new AbortController();
     var to = setTimeout(function () { ctrl.abort(); }, ms || HTTP_TIMEOUT_MS);
     var opts = { method: method || 'GET', headers: { 'Accept': 'application/json' }, signal: ctrl.signal, cache: 'no-store' };
     if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-    return fetch(url, opts).then(function (res) {
+    return f(url, opts).then(function (res) {
       clearTimeout(to);
       if (res.status === 404) { var e404 = new Error('API not present (HTTP 404)'); e404.http404 = true; throw e404; }
       if (!res.ok) throw new Error('Device responded HTTP ' + res.status);
@@ -291,12 +353,13 @@
   }
   function handleHttpFail(err) {
     httpFails++;
+    log('warn', 'HTTP poll failed (' + httpFails + '): ' + (err && err.message || 'network'));
     emit('disconnected', { error: 'HTTP link error: ' + (err && err.message || 'network') });
     if (httpFails >= HTTP_FAIL_LIMIT) {
       stopHttpPolling();
       transport = null;
       emit('disconnected', { error: unreachableMsg(espHost()) });
-      scheduleReconnect();       // back to trying WebSocket
+      scheduleReconnect('http-failed');   // back to trying WebSocket
     }
   }
 
@@ -321,13 +384,14 @@
         transport = 'http';
         startHttpPolling();                     // readings arrive -> 'connected' + 'reading' fire
       } else {
+        setState(STATES.ERROR, 'firmware-no-api');
         emit('disconnected', { error: 'The robot answered on port 80 but has no /api/sensors — firmware is outdated. ' +
           'Flash firmware/AgriRobo_MDDS10_dht11.ino (v1.1.0 or newer) and upload the app files to LittleFS.' });
-        if (retryWsAfter) scheduleReconnect();
+        if (retryWsAfter) scheduleReconnect('firmware-no-api');
       }
     }).catch(function () {
       emit('disconnected', { error: unreachableMsg(host) });
-      scheduleReconnect();
+      scheduleReconnect('http-probe-failed');
     });
   }
 
@@ -518,7 +582,20 @@
   function setSpeed(m) { AgrStore.saveSettings({ speedMode: Number(m) }); }   // 0 normal, 1 slow, 2 fast
   function getSpeed() { return speedMode(); }
 
-  /* connection doctor: precise step-by-step verdict */
+  /* ---- verdict helpers for the connection doctor ---- */
+  function wsVerdict(rec) {
+    return { ok: true, transport: 'ws', message: 'Connected via WebSocket ✓  Temp ' + rec.temperatureC + ' °C, Humidity ' +
+      rec.humidityPercent + ' %, Soil raw ' + rec.soilMoistureRaw };
+  }
+  function httpVerdict(rec) {
+    return { ok: true, transport: 'http', message: 'Connected over HTTP fallback ✓ (WebSocket :81 silent — re-flash the latest firmware for full-speed control). ' +
+      'Temp ' + rec.temperatureC + ' °C, Soil raw ' + rec.soilMoistureRaw };
+  }
+
+  /* RC1 fix: the doctor now tries the PRIMARY WebSocket transport FIRST.
+     Only if WS stays silent does it probe HTTP — so a WS-only firmware build
+     (v1.0, port 81 with no /api/* on port 80) reports a healthy WebSocket
+     instead of a false "flash firmware" error. */
   function testConnection() {
     if (isDemo()) return new Promise(function (r) {
       setTimeout(function () { r({ ok: true, demo: true, message: 'Demo mode — no hardware required.' }); }, 300);
@@ -527,37 +604,40 @@
       return Promise.reject(new Error('This page is HTTPS — the browser blocks plain ws:// and http:// robot links. ' +
         'Open http://' + (espHost() || '192.168.4.1') + ' (robot-served app), or use Demo mode.'));
     }
+    if (!espHost()) {
+      return Promise.reject(new Error('No ESP32 address set — enter it in Settings (e.g. http://192.168.4.1).'));
+    }
     wantLive = true;
-    return httpProbe().then(function (info) {
-      if (!info.sensorsOk) {
-        // reachable on port 80 but firmware has no API -> WebSocket-only build
-        if (wsOpen) return { ok: true, message: 'Connected via WebSocket (legacy firmware on port 80 without HTTP API).' };
-        throw new Error('The robot answered on port 80 but has no /api/sensors — flash firmware/AgriRobo_MDDS10_dht11.ino v1.1.0+.');
-      }
-      // HTTP API works; now give the WebSocket a chance, then report which transport is live
-      if (!wsOpen) connectWs();
-      return waitForData(6500).catch(function (e) {
-        if (transport === 'http' && latest) return latest;
-        if (info.sensorsOk) {                    // WS silent -> settle on HTTP
+    backoffIdx = 0;
+    setState(STATES.CONNECTING, 'doctor');
+
+    // Fast path: already have a live link -> report it immediately.
+    if (wsOpen && latest) return Promise.resolve(wsVerdict(latest));
+    if (transport === 'http' && latest) return Promise.resolve(httpVerdict(latest));
+
+    // 1) Try the PRIMARY WebSocket transport.
+    if (!wsOpen && transport !== 'http') connectWs();
+
+    return waitForData(6000).then(function (rec) {
+      if (rec && rec.transport === 'ws') return wsVerdict(rec);
+      if (rec && rec.transport === 'http') return httpVerdict(rec);
+      return { ok: true, message: 'Connected.' };
+    }).catch(function () {
+      // 2) WS stayed silent — did the HTTP fallback already take over?
+      if (transport === 'http' && latest) return httpVerdict(latest);
+      // 3) Nothing flowed: probe HTTP purely to produce a precise diagnosis.
+      return httpProbe().then(function (info) {
+        if (info.sensorsOk) {
           transport = 'http';
           startHttpPolling();
-          return httpFetchOnce();
+          return httpFetchOnce().then(httpVerdict);
         }
-        throw e;
+        // reachable on :80 but no API -> legacy WS-only build (WS already failed above)
+        throw new Error('The robot answered on port 80 but has no /api/sensors — flash firmware/AgriRobo_MDDS10_dht11.ino v1.1.0+.');
+      }).catch(function (err) {
+        if (/flash|firmware|HTTPS/i.test(err.message || '')) throw err;
+        throw new Error(unreachableMsg(espHost()));
       });
-    }).then(function (rec) {
-      if (rec && rec.transport === 'ws') {
-        return { ok: true, message: 'Connected via WebSocket ✓  Temp ' + rec.temperatureC + ' °C, Humidity ' +
-          rec.humidityPercent + ' %, Soil raw ' + rec.soilMoistureRaw };
-      }
-      if (rec && rec.transport === 'http') {
-        return { ok: true, message: 'Connected over HTTP fallback ✓ (WebSocket :81 silent — re-flash the latest firmware for full-speed control). ' +
-          'Temp ' + rec.temperatureC + ' °C, Soil raw ' + rec.soilMoistureRaw };
-      }
-      return { ok: true, message: 'Connected.' };
-    }).catch(function (err) {
-      if (/flash|firmware|HTTPS/i.test(err.message || '')) throw err;
-      throw new Error(unreachableMsg(espHost()));
     });
   }
 
@@ -568,6 +648,8 @@
       fetchOnce().catch(function () {});
       pollTimer = setInterval(function () { fetchOnce().catch(function () {}); }, ms);
     } else {
+      wantLive = true;
+      backoffIdx = 0;
       connectLive();
     }
   }
@@ -577,6 +659,8 @@
     stopMoveRepeat();
     wantLive = false;
     transport = null;
+    state = STATES.IDLE;
+    backoffIdx = 0;
     closeWs();
   }
 
@@ -590,6 +674,23 @@
   window.addEventListener('pagehide', haltDrive);
   window.addEventListener('blur', haltDrive);
 
+  /* test hook: inject transport deps / timings without touching globals */
+  function _configure(opts) {
+    if (!opts) return;
+    if ('WebSocket' in opts) WebSocketImpl = opts.WebSocket;
+    if ('fetch' in opts) fetchImpl = opts.fetch;
+    if (opts.connectTimeoutMs) CONNECT_TIMEOUT_MS = opts.connectTimeoutMs;
+    if (opts.httpTimeoutMs) HTTP_TIMEOUT_MS = opts.httpTimeoutMs;
+  }
+
+  function getDiag() {
+    return {
+      state: state, transport: transport, host: espHost(),
+      wsOpen: wsOpen, wantLive: wantLive, backoffIdx: backoffIdx,
+      demo: isDemo(), log: diag.slice()
+    };
+  }
+
   window.AgrApi = {
     on: on, fetchOnce: fetchOnce, startPolling: startPolling, stopPolling: stopPolling,
     testConnection: testConnection, sendWater: sendWater, sendMove: sendMove,
@@ -598,6 +699,9 @@
     isPumping: function () { return pumping; },
     isConnected: function () { return wsOpen || transport === 'http'; },
     getTransport: function () { return transport; },
+    getState: function () { return state; },
+    getDiag: getDiag,
+    _configure: _configure,
     rawToPercent: rawToPercent
   };
 })();

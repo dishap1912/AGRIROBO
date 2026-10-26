@@ -123,10 +123,18 @@ html, body {
 }
 .conn-badge.connected .dot { background: #81c784; animation: pulse 2s infinite; }
 .conn-badge.demo .dot { background: #ffb74d; }
+.conn-badge.connecting .dot { background: #ffb74d; animation: pulse 1s infinite; }
+.conn-badge.error .dot { background: #c62828; }
 @keyframes pulse {
   0%   { box-shadow: 0 0 0 0 rgba(129,199,132,0.6); }
   70%  { box-shadow: 0 0 0 7px rgba(129,199,132,0); }
   100% { box-shadow: 0 0 0 0 rgba(129,199,132,0); }
+}
+
+/* Stale dashboard: keep values visible but dimmed while reconnecting */
+#dashboard-grid.stale {
+  opacity: 0.55;
+  transition: opacity 0.3s ease;
 }
 
 .icon-btn {

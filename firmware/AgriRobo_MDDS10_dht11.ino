@@ -508,7 +508,7 @@ static void onWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t lengt
 //     POST /api/control/seed       {"action":"dispense"}
 //     POST /api/control/plough / /api/water -> 501 (not in this build)
 // ============================================================================
-static void sendJson(const String& body, int code = 200) {
+static void sendJson(const String& body, int code) {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.sendHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -520,7 +520,7 @@ static void handleOptions() { sendJson("", 204); }
 static void handleApiStatus() {
   sendJson("{\"device\":\"AgriRobo\",\"firmware\":\"1.1.0\",\"ws_port\":81,"
            "\"http_api\":true,\"sensors\":{\"dht11\":true,\"soil\":true},"
-           "\"features\":{\"pump\":false,\"movement\":true,\"seed\":true,\"plough\":false}}");
+           "\"features\":{\"pump\":false,\"movement\":true,\"seed\":true,\"plough\":false}}", 200);
 }
 
 static void handleApiSensors() {
@@ -541,7 +541,7 @@ static void handleApiSensors() {
   if (!g_dhtOk) out += ",\"last_error\":\"DHT11 read failed - check wiring\"";
   out += ",\"features\":{\"pump\":false,\"movement\":true,\"seed\":true,\"plough\":false}";
   out += ",\"pump\":{\"supported\":false,\"status\":\"off\"}}";
-  sendJson(out);
+  sendJson(out, 200);
 }
 
 static void handleApiMove() {
@@ -569,7 +569,7 @@ static void handleApiMove() {
   g_lastPacketMs = millis();   // refresh the 800 ms failsafe (app re- sends while holding)
   g_haveCmd = true;
 
-  sendJson("{\"ok\":true,\"direction\":\"" + dir + "\"}");
+  sendJson("{\"ok\":true,\"direction\":\"" + dir + "\"}", 200);
 }
 
 static void handleApiEmergency() {
@@ -577,12 +577,12 @@ static void handleApiEmergency() {
   armed = false;
   g_haveCmd = false;
   g_x = 0; g_y = 0;
-  sendJson("{\"ok\":true,\"status\":\"all_stopped\"}");
+  sendJson("{\"ok\":true,\"status\":\"all_stopped\"}", 200);
 }
 
 static void handleApiSeed() {
   servoStartDispense();
-  sendJson("{\"ok\":true,\"gate\":\"dispensing\",\"note\":\"gate opens then closes automatically\"}");
+  sendJson("{\"ok\":true,\"gate\":\"dispensing\",\"note\":\"gate opens then closes automatically\"}", 200);
 }
 
 static void handleApiPlough() { sendJson("{\"ok\":false,\"error\":\"plough_not_implemented\"}", 501); }

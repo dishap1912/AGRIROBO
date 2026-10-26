@@ -1,5 +1,5 @@
-/* AgriRobo Service Worker — offline app shell */
-var CACHE = 'agrirobo-v2';
+/* AgriRobo Service Worker — offline app shell (network-first) */
+var CACHE = 'agrirobo-v3';   // v3: cache-first was serving stale api.js; now network-first
 var ASSETS = [
   './',
   './index.html',
@@ -34,17 +34,20 @@ self.addEventListener('fetch', function (e) {
   var url = new URL(e.request.url);
   // Never cache API calls to the ESP32 (or anything cross-origin)
   if (url.origin !== location.origin || e.request.method !== 'GET') return;
+
+  // NETWORK-FIRST: always try the network so fresh code (api.js fixes) reaches
+  // the phone immediately; fall back to cache only when offline.
   e.respondWith(
-    caches.match(e.request).then(function (cached) {
-      return cached || fetch(e.request).then(function (res) {
-        if (res && res.ok) {
-          var copy = res.clone();
-          caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
-        }
-        return res;
-      });
+    fetch(e.request).then(function (res) {
+      if (res && res.ok) {
+        var copy = res.clone();
+        caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
+      }
+      return res;
     }).catch(function () {
-      return caches.match('./index.html');
+      return caches.match(e.request).then(function (cached) {
+        return cached || caches.match('./index.html');
+      });
     })
   );
 });

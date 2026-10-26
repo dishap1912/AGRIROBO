@@ -102,7 +102,10 @@
   }
 
   /* ================= Dashboard render ================= */
-  function renderConnection(connected, mode) {
+  // connState mirrors AgrApi's state machine: idle|connecting|connected|reconnecting|error
+  var connState = 'idle';
+
+  function renderConnection(connected, mode, stateDetail) {
     var badge = $('#conn-badge');
     var label = badge.querySelector('.conn-label');
     var ctrlBadge = $('#ctrl-conn');
@@ -110,12 +113,23 @@
     var demoBanner = $('#demo-banner');
     var isDemo = mode === 'demo';
 
+    // Badge styling classes
     badge.classList.toggle('connected', connected && !isDemo);
     badge.classList.toggle('demo', isDemo);
+    badge.classList.toggle('connecting', !connected && !isDemo && (connState === 'connecting' || connState === 'reconnecting'));
+    badge.classList.toggle('error', !connected && !isDemo && connState === 'error');
     ctrlBadge.classList.toggle('connected', connected && !isDemo);
     ctrlBadge.classList.toggle('demo', isDemo);
+    ctrlBadge.classList.toggle('connecting', badge.classList.contains('connecting'));
+    ctrlBadge.classList.toggle('error', badge.classList.contains('error'));
 
-    var text = isDemo ? 'Demo Mode' : (connected ? 'Connected' : 'Disconnected');
+    var text;
+    if (isDemo) text = 'Demo Mode';
+    else if (connected) text = 'Connected';
+    else if (connState === 'connecting') text = 'Connecting…';
+    else if (connState === 'reconnecting') text = 'Reconnecting…';
+    else if (connState === 'error') text = 'Connection Error';
+    else text = 'Disconnected';
     label.textContent = text;
     ctrlLabel.textContent = text;
 
@@ -128,6 +142,13 @@
     var controlsEnabled = connected; // demo mode counts as connected for UI but shows labels
     enableControls(controlsEnabled);
   }
+
+  // Track AgrApi state machine -> badge labels
+  AgrApi.on('state', function (info) {
+    connState = info.state;
+    var connected = (info.state === 'connected');
+    renderConnection(connected, AgrStore.settings.mode, info.detail);
+  });
 
   function enableControls(enabled) {
     $$('#dpad .dpad-btn').forEach(function (b) { b.disabled = !enabled; });
@@ -241,14 +262,20 @@
     // --- Unavailable state ---
     $('#data-unavailable').classList.add('hidden');
     $('#dashboard-grid').classList.remove('hidden');
+    $('#dashboard-grid').classList.remove('stale');
     $('#update-bar').classList.remove('hidden');
     $('#last-update-label').textContent = fmtTime(rec.timestamp) + (rec.mode === 'demo' ? ' (demo)' : '');
   }
 
   function showUnavailable(msg) {
     $('#data-unavailable').classList.remove('hidden');
-    $('#dashboard-grid').classList.add('hidden');
-    $('#update-bar').classList.add('hidden');
+    // RC4: keep the dashboard VISIBLE with stale marking instead of hiding it —
+    // the user keeps their last-known values on screen while we retry.
+    var grid = $('#dashboard-grid');
+    var updateBar = $('#update-bar');
+    grid.classList.remove('hidden');
+    grid.classList.add('stale');
+    updateBar.classList.remove('hidden');
     if (msg) $('#data-unavailable-msg').textContent = msg;
     // still fill last-known values if any
     if (AgrStore.lastReading) {
@@ -374,6 +401,7 @@
       renderConnection(true, 'demo');
       AgrApi.startPolling();
     } else {
+      connState = 'connecting';
       renderConnection(false, 'live');
       AgrApi.startPolling();
     }
@@ -692,6 +720,7 @@
       if (!last) return;
       var limit = (Number(s.refreshIntervalSec) || 5) * 3000 + 5000;
       if (Date.now() - last > limit) {
+        connState = 'reconnecting';
         renderConnection(false, 'live');
         showUnavailable('No data received from the robot for a while. Check power and Wi-Fi.');
       }
