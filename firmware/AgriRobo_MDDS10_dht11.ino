@@ -23,6 +23,14 @@
  *   It streams values 20 times per second. If the stream stops for
  *   PACKET_TIMEOUT_MS, or the socket closes, all motors stop (failsafe).
  *
+ *   The AgriRobo mobile app (same files in LittleFS) talks to the robot over
+ *   the WebSocket on :81 (primary).  A JSON HTTP API on :80 is also provided
+ *   as a fallback so the app can still monitor sensors and send movement if
+ *   the WebSocket path fails:
+ *     GET  /api/status   GET /api/sensors
+ *     POST /api/control/move | /api/control/emergency | /api/control/seed
+ *   Firmware version: 1.1.0
+ *
  * After connect and after STOP the robot is "disarmed" until the stick/keys
  * return to centre, so it never lurches.
  */
@@ -330,10 +338,15 @@ try{
 )rawliteral";
 
 // ============================================================================
-// 6b. DHT11 SENSOR (read every 2 s, pushed to the web page over the WebSocket)
+// 6b. DHT11 SENSOR (read every 2 s, pushed to the web page over the WebSocket
+//     AND cached for the HTTP fallback API  GET /api/sensors)
 // ============================================================================
 DHT dht(DHT_PIN, DHT11);
-char g_sensorMsg[40] = "";    // latest message, e.g. "S,28.5,61"
+char g_sensorMsg[40] = "";    // latest message, e.g. "S,28.5,61,2310"
+float g_temp    = NAN;        // last good temperature (°C)
+float g_hum     = NAN;        // last good humidity (%)
+int   g_soilRaw = -1;         // last soil ADC reading (-1 = none)
+bool  g_dhtOk   = false;      // false = last DHT read failed
 
 static void dhtUpdate(uint32_t now) {
   static uint32_t last = 0;
@@ -344,9 +357,13 @@ static void dhtUpdate(uint32_t now) {
   const float h = dht.readHumidity();      // %
   const int soil = USE_SOIL ? analogRead(SOIL_PIN) : -1;   // raw 0..4095, app calibrates it
 
+  g_dhtOk = !isnan(t) && !isnan(h);
+  if (g_dhtOk) { g_temp = t; g_hum = h; }
+  g_soilRaw = soil;
+
   // Message format: S,<tempC>,<hum%>,<soilRaw>   (err / -1 = not available)
   char tb[12], hb[12], sb[12];
-  if (isnan(t) || isnan(h)) { strcpy(tb, "err"); strcpy(hb, "err"); Serial.println("[DHT] read failed - check wiring"); }
+  if (!g_dhtOk) { strcpy(tb, "err"); strcpy(hb, "err"); Serial.println("[DHT] read failed - check wiring"); }
   else { snprintf(tb, sizeof(tb), "%.1f", t); snprintf(hb, sizeof(hb), "%.0f", h); }
   if (soil < 0) strcpy(sb, "err"); else snprintf(sb, sizeof(sb), "%d", soil);
   snprintf(g_sensorMsg, sizeof(g_sensorMsg), "S,%s,%s,%s", tb, hb, sb);
@@ -483,6 +500,95 @@ static void onWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t lengt
 }
 
 // ============================================================================
+// 9b. HTTP FALLBACK API (used by the app when the WebSocket cannot connect)
+//     GET  /api/status     - device info (lets the app verify HTTP works)
+//     GET  /api/sensors    - latest DHT11 + soil readings as JSON
+//     POST /api/control/move       {"direction":"forward","speed":1}
+//     POST /api/control/emergency  {"action":"stop_all"}
+//     POST /api/control/seed       {"action":"dispense"}
+//     POST /api/control/plough / /api/water -> 501 (not in this build)
+// ============================================================================
+static void sendJson(const String& body, int code = 200) {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.send(code, "application/json", body);
+}
+
+static void handleOptions() { sendJson("", 204); }
+
+static void handleApiStatus() {
+  sendJson("{\"device\":\"AgriRobo\",\"firmware\":\"1.1.0\",\"ws_port\":81,"
+           "\"http_api\":true,\"sensors\":{\"dht11\":true,\"soil\":true},"
+           "\"features\":{\"pump\":false,\"movement\":true,\"seed\":true,\"plough\":false}}");
+}
+
+static void handleApiSensors() {
+  char t[12] = "null", h[12] = "null", s[12] = "null";
+  if (g_dhtOk) { snprintf(t, sizeof(t), "%.1f", g_temp); snprintf(h, sizeof(h), "%.0f", g_hum); }
+  if (g_soilRaw >= 0) snprintf(s, sizeof(s), "%d", g_soilRaw);
+
+  String out;
+  out.reserve(340);
+  out += "{\"soil_moisture_raw\":";
+  out += s;
+  out += ",\"soil_moisture_percent\":null,";      // null -> the app converts using its calibration
+  out += "\"temperature_c\":";
+  out += t;
+  out += ",\"humidity_percent\":";
+  out += h;
+  out += ",\"device_status\":\"connected\",\"firmware\":\"1.1.0\"";
+  if (!g_dhtOk) out += ",\"last_error\":\"DHT11 read failed - check wiring\"";
+  out += ",\"features\":{\"pump\":false,\"movement\":true,\"seed\":true,\"plough\":false}";
+  out += ",\"pump\":{\"supported\":false,\"status\":\"off\"}}";
+  sendJson(out);
+}
+
+static void handleApiMove() {
+  String b = server.arg("plain");
+  String dir = "stop";
+  if      (b.indexOf("\"forward\"")  >= 0) dir = "forward";
+  else if (b.indexOf("\"backward\"") >= 0) dir = "backward";
+  else if (b.indexOf("\"left\"")     >= 0) dir = "left";
+  else if (b.indexOf("\"right\"")    >= 0) dir = "right";
+
+  // optional speed selection: {"speed":0|1|2}
+  int sp = -1;
+  if (b.indexOf("\"speed\":0") >= 0 || b.indexOf("\"speed\": 0") >= 0) sp = 0;
+  if (b.indexOf("\"speed\":1") >= 0 || b.indexOf("\"speed\": 1") >= 0) sp = 1;
+  if (b.indexOf("\"speed\":2") >= 0 || b.indexOf("\"speed\": 2") >= 0) sp = 2;
+  if (sp >= 0) mode = (SpeedMode)sp;
+
+  if      (dir == "forward")  { g_x = 0;   g_y = 100; }
+  else if (dir == "backward") { g_x = 0;   g_y = -100; }
+  else if (dir == "left")     { g_x = -100; g_y = 0; }
+  else if (dir == "right")    { g_x = 100;  g_y = 0; }
+  else                        { g_x = 0;   g_y = 0; }
+
+  if (dir == "stop") { stopAllMotors(); armed = false; }   // same semantics as the WS stop flag
+  g_lastPacketMs = millis();   // refresh the 800 ms failsafe (app re- sends while holding)
+  g_haveCmd = true;
+
+  sendJson("{\"ok\":true,\"direction\":\"" + dir + "\"}");
+}
+
+static void handleApiEmergency() {
+  stopAllMotors();
+  armed = false;
+  g_haveCmd = false;
+  g_x = 0; g_y = 0;
+  sendJson("{\"ok\":true,\"status\":\"all_stopped\"}");
+}
+
+static void handleApiSeed() {
+  servoStartDispense();
+  sendJson("{\"ok\":true,\"gate\":\"dispensing\",\"note\":\"gate opens then closes automatically\"}");
+}
+
+static void handleApiPlough() { sendJson("{\"ok\":false,\"error\":\"plough_not_implemented\"}", 501); }
+static void handleApiWater()  { sendJson("{\"ok\":false,\"error\":\"pump_not_in_this_build\"}", 501); }
+
+// ============================================================================
 // 10. SETUP
 // ============================================================================
 void setup() {
@@ -527,12 +633,31 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/legacy", handleLegacy);
+
+  // HTTP fallback API (app uses this if the WebSocket on :81 cannot connect)
+  server.on("/api/status", HTTP_GET, handleApiStatus);
+  server.on("/api/sensors", HTTP_GET, handleApiSensors);
+  server.on("/api/control/move", HTTP_POST, handleApiMove);
+  server.on("/api/control/emergency", HTTP_POST, handleApiEmergency);
+  server.on("/api/control/seed", HTTP_POST, handleApiSeed);
+  server.on("/api/control/plough", HTTP_POST, handleApiPlough);
+  server.on("/api/water", HTTP_POST, handleApiWater);
+  // CORS preflight for every API path
+  server.on("/api/status", HTTP_OPTIONS, handleOptions);
+  server.on("/api/sensors", HTTP_OPTIONS, handleOptions);
+  server.on("/api/control/move", HTTP_OPTIONS, handleOptions);
+  server.on("/api/control/emergency", HTTP_OPTIONS, handleOptions);
+  server.on("/api/control/seed", HTTP_OPTIONS, handleOptions);
+  server.on("/api/control/plough", HTTP_OPTIONS, handleOptions);
+  server.on("/api/water", HTTP_OPTIONS, handleOptions);
+
   server.onNotFound(handleNotFound);
   server.begin();
 
   ws.begin();
   ws.onEvent(onWsEvent);
-  Serial.println("[WEB] HTTP :80 and WebSocket :81 started");
+  Serial.println("[WEB] HTTP :80 (app + /api/* fallback) and WebSocket :81 started");
+  Serial.println("[WEB] API: GET /api/sensors  /api/status   POST /api/control/move|emergency|seed");
 }
 
 // ============================================================================

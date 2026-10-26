@@ -46,7 +46,17 @@ Phone ──Wi-Fi──▶ ESP32 "AgriRobo" network  (192.168.4.1)
 - After connecting or stopping, the robot stays **disarmed until the stick returns to centre** — it never lurches.
 - The app also halts driving when the tab is hidden/closed.
 
-> **Important:** the hosted GitHub Pages copy runs on **HTTPS**, and browsers block insecure `ws://` from HTTPS pages. So **live robot control works from the robot-served app (`http://192.168.4.1`)**. The hosted copy is for demo mode and reviewing the UI anywhere. The app detects this and shows a clear message.
+### Connection fallback (firmware v1.1.0+)
+The app uses **two transports** and picks whichever works:
+
+| Transport | Endpoint | Role |
+|---|---|---|
+| **WebSocket** (primary) | `ws://<robot>:81` | Full-speed control + sensor stream |
+| **HTTP JSON** (fallback) | `GET /api/sensors`, `POST /api/control/*` on port 80 | Auto-engaged if port 81 doesn't answer; movement is re-sent every 300 ms to feed the failsafe |
+
+**Settings → Test connection** runs a connection doctor and tells you exactly what is wrong (unreachable robot / HTTPS page / outdated firmware / WebSocket silent — using HTTP fallback).
+
+> **Important:** the hosted GitHub Pages copy runs on **HTTPS**, and browsers block insecure `ws://` **and** `http://` from HTTPS pages. So **live robot links work from the robot-served app (`http://192.168.4.1`)**. The hosted copy is for demo mode and reviewing the UI anywhere — the app detects this and shows a clear message.
 
 ---
 
@@ -92,6 +102,16 @@ Phone ──Wi-Fi──▶ ESP32 "AgriRobo" network  (192.168.4.1)
 
 No configuration is needed when the app is served by the robot — it auto-detects its own host.
 
+### 3.4 If the connection fails (do these in order)
+1. **Open `http://192.168.4.1`, not the GitHub Pages link** — HTTPS pages cannot talk to the robot.
+2. **Turn OFF mobile data / disable "switch to mobile data"** — ⚠ *the most common problem*: Android and iPhone automatically leave Wi-Fi networks that have no internet and fall back to mobile data, which silently cuts the robot link. Disable mobile data (or the auto-switch option) while using the robot.
+3. Confirm the phone is really on **`AgriRobo`** (Wi-Fi settings) and the robot is powered (Serial Monitor shows `AP AgriRobo started`).
+4. Tap **Test connection** in Settings — the doctor's message tells you which case you're in:
+   - *"Cannot reach the robot…"* → steps 1–3 above
+   - *"page is HTTPS…"* → open `http://192.168.4.1`
+   - *"firmware is outdated…"* → flash `firmware/AgriRobo_MDDS10_dht11.ino` (v1.1.0+)
+   - *"HTTP fallback ✓"* → sensors work; re-flash for full-speed WebSocket control
+
 ---
 
 ## 4. Protocol specification (app ↔ firmware)
@@ -119,6 +139,18 @@ S,<tempC>,<hum%>,<soilRaw>
 
 ### Legacy built-in page
 `http://192.168.4.1/legacy` — the firmware's original joystick page (always available, works even if LittleFS isn't uploaded).
+
+### HTTP fallback API (port 80, firmware v1.1.0+)
+Used automatically when the WebSocket cannot connect (CORS enabled):
+
+| Endpoint | Body | Response |
+|---|---|---|
+| `GET /api/status` | — | device, firmware, ws port, features |
+| `GET /api/sensors` | — | `{"soil_moisture_raw":2310,"soil_moisture_percent":null,"temperature_c":27.1,"humidity_percent":55,"device_status":"connected","features":{...}}` |
+| `POST /api/control/move` | `{"direction":"forward\|backward\|left\|right\|stop","speed":0\|1\|2}` | `{"ok":true,...}` — refreshes the 800 ms failsafe (the app re-sends every 300 ms while holding) |
+| `POST /api/control/emergency` | `{"action":"stop_all"}` | stops motors + disarms |
+| `POST /api/control/seed` | `{"action":"dispense"}` | opens the seed gate |
+| `POST /api/control/plough`, `POST /api/water` | — | `501` (not in this build) |
 
 ---
 

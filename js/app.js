@@ -212,6 +212,8 @@
 
     // --- Device ---
     $('#device-status').textContent = rec.mode === 'demo' ? 'Demo (simulated)' : (rec.deviceStatus === 'connected' ? 'Connected' : rec.deviceStatus);
+    $('#device-mode').textContent = rec.mode === 'demo' ? 'Demo (simulated)'
+      : (rec.transport === 'http' ? 'Live · HTTP fallback' : 'Live · WebSocket');
     $('#device-last').textContent = fmtTime(rec.timestamp);
     $('#pump-status').textContent = rec.pumpStatus ? rec.pumpStatus.toUpperCase() : (AgrApi.isPumping() ? 'ON' : 'Unknown');
     if (rec.battery !== null && rec.battery !== undefined) {
@@ -655,9 +657,16 @@
     });
 
     AgrApi.on('disconnected', function (info) {
-      renderConnection(false, 'live');
-      showUnavailable('Could not reach the robot: ' + (info && info.error || 'network error') +
-        '. Make sure your phone is on the same Wi-Fi network as the ESP32, then tap Refresh.');
+      renderConnection(false, AgrStore.settings.mode);
+      var msg = (info && info.error) || 'Network error.';
+      var last = AgrStore.lastSuccessAt;
+      var limit = Math.max(4, Number(AgrStore.settings.refreshIntervalSec) || 5) * 1000;
+      if (last && (Date.now() - last) < limit) {
+        // Recent data on screen (e.g. mid WebSocket->HTTP fallback): keep dashboard, note the issue
+        renderAlerts(msg);
+        return;
+      }
+      showUnavailable(msg);
       renderAlerts('Robot disconnected — cannot fetch sensor data.');
     });
 
